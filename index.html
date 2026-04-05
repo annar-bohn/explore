@@ -1,1 +1,548 @@
-Greatness awaits
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wolfram Cellular Automata</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #000;
+    color: #333;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  canvas {
+    display: block;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 0;
+  }
+
+  #overlay {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    background: rgba(0, 0, 0, 0.35);
+    transition: opacity 0.5s;
+  }
+
+  #overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  #overlay h1 {
+    font-size: 32px;
+    letter-spacing: 5px;
+    text-transform: uppercase;
+    color: #fff;
+    text-shadow: 0 2px 20px rgba(0,0,0,0.5);
+  }
+
+  #overlay p {
+    color: rgba(255,255,255,0.7);
+    font-size: 14px;
+    max-width: 420px;
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  #rule-form {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+
+  #rule-input {
+    background: rgba(255,255,255,0.9);
+    border: 2px solid rgba(255,255,255,0.6);
+    color: #222;
+    font-family: inherit;
+    font-size: 24px;
+    padding: 12px 20px;
+    width: 140px;
+    text-align: center;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  #rule-input:focus {
+    border-color: #4a90d9;
+    box-shadow: 0 0 15px rgba(74, 144, 217, 0.3);
+  }
+
+  #start-btn {
+    background: #4a90d9;
+    color: #fff;
+    border: none;
+    font-family: inherit;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 14px 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+
+  #start-btn:hover {
+    background: #5aa0e9;
+    box-shadow: 0 0 20px rgba(74, 144, 217, 0.4);
+  }
+
+  #error-msg {
+    color: #ff6b6b;
+    font-size: 13px;
+    height: 18px;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  }
+
+  #hud {
+    position: fixed;
+    top: 16px;
+    left: 20px;
+    font-size: 14px;
+    color: rgba(255,255,255,0.7);
+    z-index: 20;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+
+  #hud.visible { opacity: 1; }
+
+  #back-btn {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    z-index: 20;
+    background: rgba(255,255,255,0.8);
+    border: 1px solid rgba(0,0,0,0.15);
+    color: #444;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    transition: background 0.2s;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  #back-btn.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  #back-btn:hover {
+    background: #fff;
+    color: #222;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div id="overlay">
+  <h1>Wolfram CA</h1>
+  <p>Enter a rule number (0 &ndash; 255) for an elementary cellular automaton. Each rule defines how three neighboring cells determine the next generation.</p>
+  <form id="rule-form">
+    <input id="rule-input" type="number" min="0" max="255" placeholder="30" autofocus>
+    <button id="start-btn" type="submit">Fly</button>
+  </form>
+  <div id="error-msg"></div>
+</div>
+
+<div id="hud">Rule <span id="hud-rule"></span></div>
+<button id="back-btn" onclick="goBack()">Back</button>
+
+<script>
+// ─── Cellular Automata Engine ───────────────────────────────────
+
+function parseRule(ruleNum) {
+  const table = new Uint8Array(8);
+  for (let i = 0; i < 8; i++) {
+    table[i] = (ruleNum >> i) & 1;
+  }
+  return table;
+}
+
+function nextRow(prev, rule) {
+  const w = prev.length;
+  const row = new Uint8Array(w);
+  for (let i = 0; i < w; i++) {
+    const l = i > 0 ? prev[i - 1] : 0;
+    const c = prev[i];
+    const r = i < w - 1 ? prev[i + 1] : 0;
+    const idx = (l << 2) | (c << 1) | r;
+    row[i] = rule[idx];
+  }
+  return row;
+}
+
+// ─── Visualization ─────────────────────────────────────────────
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const GRID_WIDTH = 201;
+const VISIBLE_ROWS = 80;
+
+let rule = null;
+let cellMap = {};             // absolute row index → Uint8Array
+let cameraZ = 0;
+let animId = null;
+let ruleStartRow = -1;        // absolute row where CA begins, -1 = no rule active
+
+// Test stripe positions (column indices) — center, left, right
+const CENTER = Math.floor(GRID_WIDTH / 2);
+const STRIPE_LEFT = Math.floor(GRID_WIDTH * 0.25);
+const STRIPE_RIGHT = Math.floor(GRID_WIDTH * 0.75);
+
+// The "rule line" — how many CA rows have been computed.
+// Grows by 1 each time the camera advances 1 row.
+let caFrontier = 0;           // number of rows computed beyond the seed
+let caFrontierFrac = 0;       // fractional accumulator
+
+function getRow(absRow) {
+  if (cellMap[absRow]) return cellMap[absRow];
+
+  // If no rule active, check for test stripes
+  if (ruleStartRow < 0) {
+    const row = new Uint8Array(GRID_WIDTH);
+    const camRow = Math.floor(cameraZ);
+    const nearEnd = camRow + 5;   // black from row+5 (near bottom)
+    const farEnd = camRow + 12;   // up to row+12 (partway toward horizon)
+    if (absRow >= nearEnd && absRow <= farEnd) {
+      row[CENTER] = 1;
+      row[CENTER - 1] = 1;
+      row[CENTER + 1] = 1;
+      row[STRIPE_LEFT] = 1;
+      row[STRIPE_LEFT - 1] = 1;
+      row[STRIPE_LEFT + 1] = 1;
+      row[STRIPE_RIGHT] = 1;
+      row[STRIPE_RIGHT - 1] = 1;
+      row[STRIPE_RIGHT + 1] = 1;
+    }
+    return row;
+  }
+
+  // Rule is active — rows before the start are empty
+  if (absRow < ruleStartRow) {
+    return new Uint8Array(GRID_WIDTH);
+  }
+
+  // Beyond the frontier — not yet computed, return empty
+  if (absRow > ruleStartRow + caFrontier) {
+    return new Uint8Array(GRID_WIDTH);
+  }
+
+  // Row 0 of the CA: single center cell
+  if (absRow === ruleStartRow) {
+    const first = new Uint8Array(GRID_WIDTH);
+    first[CENTER] = 1;
+    cellMap[absRow] = first;
+    return first;
+  }
+
+  // Compute from previous row
+  const prev = getRow(absRow - 1);
+  const row = nextRow(prev, rule);
+  cellMap[absRow] = row;
+  return row;
+}
+
+function activateRule(ruleNum) {
+  rule = parseRule(ruleNum);
+  // Start the seed row ~8 rows ahead of camera (visible near bottom of screen)
+  ruleStartRow = Math.floor(cameraZ) + 8;
+  cellMap = {};
+  caFrontier = 0;
+  caFrontierFrac = 0;
+}
+
+function deactivateRule() {
+  ruleStartRow = -1;
+  rule = null;
+  cellMap = {};
+  caFrontier = 0;
+  caFrontierFrac = 0;
+}
+
+function resizeCanvas() {
+  canvas.width = canvas.clientWidth * devicePixelRatio;
+  canvas.height = canvas.clientHeight * devicePixelRatio;
+}
+
+// ─── Mode-7 flat plane renderer ────────────────────────────────
+
+const CAM_HEIGHT = 5.0;
+const HORIZON_FRAC = 0.40;
+const CELL_WORLD = 1.0;
+const FOV = 1.2;
+
+let flySpeed = 1.0;           // rows per second (actual)
+let flySpeedTarget = 1.0;     // rows per second (target)
+const FRONTIER_SPEED = 3.5;   // CA rows per second (constant)
+let lastTime = 0;             // for delta-time calculation
+const FLY_SPEED_MIN = 0.1;
+const FLY_SPEED_MAX = 5.0;
+const FLY_SPEED_STEP = 0.3;
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowUp') {
+    flySpeedTarget = Math.min(FLY_SPEED_MAX, flySpeedTarget + FLY_SPEED_STEP);
+    e.preventDefault();
+  } else if (e.key === 'ArrowDown') {
+    flySpeedTarget = Math.max(FLY_SPEED_MIN, flySpeedTarget - FLY_SPEED_STEP);
+    e.preventDefault();
+  }
+});
+
+function draw(timestamp) {
+  // Delta time in seconds (capped to avoid huge jumps on tab refocus)
+  if (!lastTime) lastTime = timestamp || performance.now();
+  const now = timestamp || performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+
+  const W = canvas.width;
+  const H = canvas.height;
+  const horizonY = H * HORIZON_FRAC;
+
+  // ── Sky ──
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, horizonY);
+  skyGrad.addColorStop(0, '#4a8ec9');
+  skyGrad.addColorStop(0.6, '#7cb5e3');
+  skyGrad.addColorStop(1, '#c5dff0');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, horizonY + 2);
+
+  // ── Ground base (white) ──
+  ctx.fillStyle = '#f2f2f2';
+  ctx.fillRect(0, horizonY, W, H - horizonY);
+
+  // Ease flySpeed toward target (sluggish)
+  flySpeed += (flySpeedTarget - flySpeed) * (1 - Math.pow(0.3, dt));
+
+  cameraZ += flySpeed * dt;
+  if (ruleStartRow >= 0) {
+    caFrontierFrac += FRONTIER_SPEED * dt;
+    while (caFrontierFrac >= 1) {
+      caFrontier++;
+      caFrontierFrac -= 1;
+    }
+  }
+  const cleanBefore = Math.floor(cameraZ) - 10;
+  for (const key in cellMap) {
+    if (+key < cleanBefore) delete cellMap[key];
+  }
+
+  const startRow = Math.floor(cameraZ);
+  const frac = cameraZ - startRow;
+
+  // Helper: world Z → screen Y
+  function worldZtoScreenY(wz) {
+    if (wz <= 0.01) return H + 200;
+    return horizonY + (CAM_HEIGHT * (H - horizonY)) / wz;
+  }
+
+  // Helper: world Z → horizontal scale
+  function worldZtoHScale(wz) {
+    return (FOV * (H - horizonY)) / wz;
+  }
+
+  // ── Draw filled cells as perspective quads (so they match the grid) ──
+  for (let i = VISIBLE_ROWS; i >= -5; i--) {
+    const rowIndex = startRow + i;
+    if (rowIndex < 0) continue;
+    const row = getRow(rowIndex);
+
+    // World Z for the far edge (toward horizon) and near edge (toward camera)
+    const zFar = (i - frac + 0.5) * CELL_WORLD;   // top of cell (further away)
+    const zNear = (i - frac - 0.5) * CELL_WORLD;   // bottom of cell (closer)
+    if (zFar <= 0.01) continue;
+
+    const yFar = worldZtoScreenY(zFar);
+    const yNear = (zNear > 0.01) ? worldZtoScreenY(zNear) : H + 100;
+
+    if (yFar > H + 100) continue;
+    if (yNear < horizonY) continue;
+
+    const hScaleFar = worldZtoHScale(zFar);
+    const hScaleNear = (zNear > 0.01) ? worldZtoHScale(zNear) : hScaleFar * 20;
+
+    const depthRatio = Math.max(0, Math.min(1, i / VISIBLE_ROWS));
+    const alpha = Math.pow(1 - depthRatio, 0.4);
+    if (alpha < 0.01) continue;
+
+    for (let j = 0; j < GRID_WIDTH; j++) {
+      if (row[j] !== 1) continue;
+
+      const cellLeft = (-GRID_WIDTH / 2 + j) * CELL_WORLD;
+      const cellRight = cellLeft + CELL_WORLD;
+
+      // Four corners of the cell in screen space
+      const tlx = W / 2 + cellLeft * hScaleFar;
+      const trx = W / 2 + cellRight * hScaleFar;
+      const blx = W / 2 + cellLeft * hScaleNear;
+      const brx = W / 2 + cellRight * hScaleNear;
+
+      // Skip if entirely off-screen horizontally
+      if (trx < -10 && brx < -10) continue;
+      if (tlx > W + 10 && blx > W + 10) continue;
+
+      const darkness = Math.floor(30 + 25 * depthRatio);
+      ctx.fillStyle = `rgba(${darkness}, ${darkness}, ${darkness + 10}, ${alpha})`;
+      ctx.beginPath();
+      ctx.moveTo(tlx, yFar);
+      ctx.lineTo(trx, yFar);
+      ctx.lineTo(brx, yNear);
+      ctx.lineTo(blx, yNear);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // ── Draw horizontal gridlines (on top of cells) ──
+  for (let i = VISIBLE_ROWS + 1; i >= -3; i--) {
+    const worldZ = (i - frac + 0.5) * CELL_WORLD;
+    if (worldZ <= 0.01) continue;
+
+    const sy = worldZtoScreenY(worldZ);
+    if (sy < horizonY || sy > H + 10) continue;
+
+    const hScale = worldZtoHScale(worldZ);
+    const totalWidth = GRID_WIDTH * CELL_WORLD * hScale;
+    const offsetX = (W - totalWidth) / 2;
+
+    const depthRatio = Math.max(0, Math.min(1, i / VISIBLE_ROWS));
+    const alpha = Math.pow(1 - depthRatio, 0.4);
+
+    ctx.strokeStyle = `rgba(160, 165, 175, ${alpha * 0.7})`;
+    ctx.lineWidth = Math.max(0.5, (1 - depthRatio) * 1.5);
+    ctx.beginPath();
+    ctx.moveTo(Math.max(0, offsetX), sy);
+    ctx.lineTo(Math.min(W, offsetX + totalWidth), sy);
+    ctx.stroke();
+  }
+
+  // ── Draw vertical gridlines (on top of cells) ──
+  for (let j = 0; j <= GRID_WIDTH; j++) {
+    const cellLeftWorld = (-GRID_WIDTH / 2 + j) * CELL_WORLD;
+
+    ctx.beginPath();
+    let started = false;
+
+    for (let i = VISIBLE_ROWS + 1; i >= -3; i--) {
+      const worldZ = (i - frac + 0.5) * CELL_WORLD;
+      if (worldZ <= 0.01) continue;
+
+      const sy = worldZtoScreenY(worldZ);
+      if (sy < horizonY) continue;
+      if (sy > H + 100) continue;  // allow off-screen bottom for smooth exit
+
+      const hScale = worldZtoHScale(worldZ);
+      const sx = W / 2 + cellLeftWorld * hScale;
+
+      if (sx < -50 || sx > W + 50) { started = false; continue; }
+
+      if (!started) {
+        ctx.moveTo(sx, sy);
+        started = true;
+      } else {
+        ctx.lineTo(sx, sy);
+      }
+    }
+
+    ctx.strokeStyle = `rgba(160, 165, 175, 0.5)`;
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+  }
+
+  // Horizon haze
+  const hazeGrad = ctx.createLinearGradient(0, horizonY - 15, 0, horizonY + 30);
+  hazeGrad.addColorStop(0, 'rgba(200, 220, 240, 0)');
+  hazeGrad.addColorStop(0.4, 'rgba(200, 220, 240, 0.5)');
+  hazeGrad.addColorStop(1, 'rgba(200, 220, 240, 0)');
+  ctx.fillStyle = hazeGrad;
+  ctx.fillRect(0, horizonY - 15, W, 45);
+
+  animId = requestAnimationFrame(draw);
+}
+
+// ─── UI ─────────────────────────────────────────────────────────
+
+const overlay = document.getElementById('overlay');
+const ruleInput = document.getElementById('rule-input');
+const errorMsg = document.getElementById('error-msg');
+const hudEl = document.getElementById('hud');
+const hudRule = document.getElementById('hud-rule');
+const backBtn = document.getElementById('back-btn');
+
+document.getElementById('rule-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const val = parseInt(ruleInput.value, 10);
+  if (isNaN(val) || val < 0 || val > 255) {
+    errorMsg.textContent = 'Please enter a number between 0 and 255';
+    return;
+  }
+  errorMsg.textContent = '';
+  startViz(val);
+});
+
+function startViz(ruleNum) {
+  activateRule(ruleNum);
+  hudRule.textContent = ruleNum;
+
+  // Hide overlay, show HUD
+  overlay.classList.add('hidden');
+  hudEl.classList.add('visible');
+  backBtn.classList.add('visible');
+}
+
+function goBack() {
+  deactivateRule();
+  overlay.classList.remove('hidden');
+  hudEl.classList.remove('visible');
+  backBtn.classList.remove('visible');
+  ruleInput.focus();
+}
+
+// ─── Boot ──
+
+function boot() {
+  resizeCanvas();
+  lastTime = performance.now();
+  function tick(ts) {
+    draw(ts);
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  // Fallback: tick simulation when tab is hidden (rAF pauses)
+  setInterval(() => { if (document.hidden) draw(performance.now()); }, 33);
+}
+
+window.addEventListener('resize', resizeCanvas);
+boot();
+</script>
+
+</body>
+</html>
